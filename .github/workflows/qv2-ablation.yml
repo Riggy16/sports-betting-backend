@@ -1,0 +1,87 @@
+name: BEARD QV2 Ablation
+
+on:
+  pull_request:
+
+jobs:
+  qv2-ablation:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Compare full qualifier with market-regime ablations
+        run: |
+          python - <<'PY'
+          import json
+          import numpy as np
+          import pandas as pd
+          from sklearn.metrics import brier_score_loss
+          from beard_model.qv2 import build_walk_forward_meta, qualifier_pipeline
+
+          frame = pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          meta = build_walk_forward_meta(frame)
+          eligible = meta[(meta.edge_abs >= 1.0) & meta.ats_win.notna()].copy()
+
+          feature_sets = {
+              'full_qv2': [
+                  'edge_abs','market_abs_spread','selected_side_home','selected_side_favorite','week','min_games_played',
+                  'selected_qb_change','selected_qb_starts_log','opponent_qb_starts_log','fair_abs_margin','home_field',
+                  'abs_rest_diff','prior_year_fair_resid_std','edge_z_prior_error'
+              ],
+              'without_market_abs_spread': [
+                  'edge_abs','selected_side_home','selected_side_favorite','week','min_games_played','selected_qb_change',
+                  'selected_qb_starts_log','opponent_qb_starts_log','fair_abs_margin','home_field','abs_rest_diff',
+                  'prior_year_fair_resid_std','edge_z_prior_error'
+              ],
+              'football_confidence_no_line_regime_or_side': [
+                  'edge_abs','week','min_games_played','selected_qb_change','selected_qb_starts_log','opponent_qb_starts_log',
+                  'fair_abs_margin','home_field','abs_rest_diff','prior_year_fair_resid_std','edge_z_prior_error'
+              ],
+              'edge_only': ['edge_abs'],
+          }
+          gates=(0.54,0.55)
+          report={}
+          for label,features in feature_sets.items():
+              folds=[]
+              for season in range(2020,2026):
+                  train=eligible[eligible.season < season].copy()
+                  test=eligible[eligible.season == season].copy()
+                  model=qualifier_pipeline(0.10).fit(train[features],train.ats_win.astype(int))
+                  prob=model.predict_proba(test[features])[:,1]
+                  gate_rows=[]
+                  for gate in gates:
+                      chosen=test[prob>=gate]
+                      w=int((chosen.ats_result=='WIN').sum()); l=int((chosen.ats_result=='LOSS').sum()); p=int((chosen.ats_result=='PUSH').sum()); n=w+l
+                      net=w*(100/110)-l
+                      gate_rows.append({'gate':gate,'bets':n,'wins':w,'losses':l,'pushes':p,'win_pct':None if not n else w/n,'roi':None if not n else net/n})
+                  folds.append({'season':season,'role':'development' if season<=2024 else 'retrospective_2025','brier':float(brier_score_loss(test.ats_win.astype(int),prob)),'gates':gate_rows})
+              aggregate=[]
+              for gate in gates:
+                  rows=[next(g for g in f['gates'] if g['gate']==gate) for f in folds if f['season']<=2024]
+                  w=sum(r['wins'] for r in rows); l=sum(r['losses'] for r in rows); p=sum(r['pushes'] for r in rows); n=w+l; net=w*(100/110)-l
+                  aggregate.append({'gate':gate,'bets':n,'wins':w,'losses':l,'pushes':p,'win_pct':None if not n else w/n,'roi':None if not n else net/n})
+              report[label]={'features':features,'development_2020_2024':aggregate,'folds':folds}
+          open('qv2_ablation.json','w').write(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-qv2-ablation
+          path: qv2_ablation.json
+          retention-days: 30
