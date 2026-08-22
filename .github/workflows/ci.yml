@@ -1,0 +1,46 @@
+name: BEARD CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+      - run: python -m beard_model.pipeline --help
+      - run: python -m beard_model.backtest --help
+
+  real-data-smoke:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Build one real nflverse season
+        run: python -m beard_model.pipeline --seasons 2025 --output artifacts/beard_2025.parquet
+      - name: Validate smoke artifact
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          p = pd.read_parquet('artifacts/beard_2025.parquet')
+          assert len(p) >= 250, f'unexpectedly few game rows: {len(p)}'
+          assert 'spread_line' in p.columns
+          assert p['home_margin'].notna().sum() >= 250
+          assert any(c.startswith('home_pre_') for c in p.columns)
+          print({'rows': len(p), 'columns': len(p.columns), 'completed_games': int(p['home_margin'].notna().sum())})
+          PY
