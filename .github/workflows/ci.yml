@@ -26,7 +26,6 @@ jobs:
       - run: python -m beard_model.backtest --help
 
   real-data-smoke:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +84,7 @@ jobs:
           print(json.dumps(report, indent=2, sort_keys=True))
           PY
       - name: Persist smoke report
+        if: github.event_name == 'push'
         run: |
           git config user.name 'beard-ci'
           git config user.email 'beard-ci@users.noreply.github.com'
