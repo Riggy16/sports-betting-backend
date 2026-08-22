@@ -3,7 +3,12 @@ name: BEARD CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'ci/latest-smoke.json'
   pull_request:
+
+permissions:
+  contents: write
 
 jobs:
   unit-tests:
@@ -31,16 +36,67 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -e '.[dev]'
-      - name: Build one real nflverse season
-        run: python -m beard_model.pipeline --seasons 2025 --output artifacts/beard_2025.parquet
-      - name: Validate smoke artifact
+      - name: Run and record real nflverse smoke
+        run: |
+          mkdir -p ci artifacts
+          python - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import traceback
+          import pandas as pd
+
+          report = {
+              'success': False,
+              'season': 2025,
+              'source': 'nflverse real PBP + schedules',
+              'command': 'python -m beard_model.pipeline --seasons 2025 --output artifacts/beard_2025.parquet',
+          }
+          try:
+              proc = subprocess.run(
+                  ['python', '-m', 'beard_model.pipeline', '--seasons', '2025', '--output', 'artifacts/beard_2025.parquet'],
+                  capture_output=True, text=True, timeout=900,
+              )
+              report['exit_code'] = proc.returncode
+              report['stdout_tail'] = proc.stdout[-4000:]
+              report['stderr_tail'] = proc.stderr[-4000:]
+              if proc.returncode != 0:
+                  raise RuntimeError(f'pipeline exited {proc.returncode}')
+              p = pd.read_parquet('artifacts/beard_2025.parquet')
+              completed = int(p['home_margin'].notna().sum())
+              checks = {
+                  'rows_at_least_250': len(p) >= 250,
+                  'spread_line_present_post_pipeline': 'spread_line' in p.columns,
+                  'completed_games_at_least_250': completed >= 250,
+                  'pregame_feature_columns_present': any(c.startswith('home_pre_') for c in p.columns),
+              }
+              report.update({
+                  'rows': int(len(p)),
+                  'columns': int(len(p.columns)),
+                  'completed_games': completed,
+                  'checks': checks,
+                  'success': all(checks.values()),
+              })
+          except Exception as exc:
+              report['error'] = f'{type(exc).__name__}: {exc}'
+              report['traceback_tail'] = traceback.format_exc()[-4000:]
+
+          pathlib.Path('ci/latest-smoke.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+      - name: Persist smoke report
+        run: |
+          git config user.name 'beard-ci'
+          git config user.email 'beard-ci@users.noreply.github.com'
+          git add ci/latest-smoke.json
+          git commit -m 'Record latest BEARD real-data smoke [skip ci]' || exit 0
+          git push
+      - name: Enforce smoke success
         run: |
           python - <<'PY'
-          import pandas as pd
-          p = pd.read_parquet('artifacts/beard_2025.parquet')
-          assert len(p) >= 250, f'unexpectedly few game rows: {len(p)}'
-          assert 'spread_line' in p.columns
-          assert p['home_margin'].notna().sum() >= 250
-          assert any(c.startswith('home_pre_') for c in p.columns)
-          print({'rows': len(p), 'columns': len(p.columns), 'completed_games': int(p['home_margin'].notna().sum())})
+          import json, sys
+          report = json.load(open('ci/latest-smoke.json'))
+          if not report.get('success'):
+              print(json.dumps(report, indent=2))
+              sys.exit(1)
           PY
