@@ -1,0 +1,54 @@
+name: BEARD v0.3 Evaluation
+
+on:
+  pull_request:
+
+jobs:
+  v03-evaluation:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Run fixed v0.3 expanding walk-forward evaluation
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from beard_model.v03 import evaluate_v03
+
+          frame = pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          result = evaluate_v03(frame)
+          with open('v03_result.json','w') as f:
+              json.dump(result, f, indent=2, sort_keys=True)
+              f.write('\n')
+          concise = {
+              'label': result['label'],
+              'architecture': result['architecture'],
+              'fixed_policy': result['fixed_policy'],
+              'aggregate_2020_2025': result['aggregate_2020_2025'],
+              'folds': result['folds'],
+              'scientific_status': result['scientific_status'],
+          }
+          print(json.dumps(concise, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-v03-evaluation
+          path: v03_result.json
+          retention-days: 30
