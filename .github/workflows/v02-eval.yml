@@ -1,0 +1,77 @@
+name: BEARD v0.2 Evaluation
+
+on:
+  pull_request:
+
+jobs:
+  v02-evaluation:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Download preserved 2015-2025 feature frame
+        uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Run v0.2 multi-season development diagnostic
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from beard_model.v02 import evaluate_walk_forward_v02
+
+          frame = pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          result = evaluate_walk_forward_v02(frame)
+          with open('v02_result.json','w') as f:
+              json.dump(result, f, indent=2, sort_keys=True)
+              f.write('\n')
+          concise = {
+              'label': result['label'],
+              'feature_count': result['feature_count'],
+              'selected_alpha': result['alpha_selection']['selected_alpha'],
+              'alpha_candidates': [
+                  {'alpha': x['alpha'], 'weighted_mae_2020_2024': x['weighted_mae']}
+                  for x in result['alpha_selection']['candidates']
+              ],
+              'aggregate_development_2020_2024': result['aggregate_development_2020_2024'],
+              'margin_by_season': [
+                  {
+                      'season': f['season'],
+                      'role': f['role'],
+                      'beard_mae': f['beard_mae'],
+                      'market_mae': f['market_mae'],
+                      'beard_minus_market_mae': f['beard_minus_market_mae'],
+                  }
+                  for f in result['folds']
+              ],
+              'threshold_3_by_season': [
+                  {
+                      'season': f['season'],
+                      'role': f['role'],
+                      **next(a for a in f['ats'] if a['threshold'] == 3.0),
+                  }
+                  for f in result['folds']
+              ],
+              'scientific_status': result['scientific_status'],
+          }
+          print(json.dumps(concise, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-v02-evaluation
+          path: v02_result.json
+          retention-days: 30
