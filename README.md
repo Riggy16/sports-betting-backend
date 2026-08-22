@@ -62,3 +62,4 @@ The pipeline constructs team/QB/matchup features first and only afterward attach
 - Unit/synthetic tests validate **code behavior**, not betting profitability.
 - The full 2015–2025 real-data chronological backtest has **not yet produced an accepted performance result**.
 - Production qualification thresholds remain unvalidated until the validation/holdout run is complete.
+- GitHub CI is configured to run the regression suite and a one-season real nflverse ingestion smoke test on pushes to `main`.
