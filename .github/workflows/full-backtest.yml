@@ -45,7 +45,7 @@ jobs:
           python -m beard_model.backtest \
             --input artifacts/beard_matchups_2015_2025.parquet \
             --output artifacts/backtest.json > artifacts/backtest_stdout.txt
-      - name: Print concise accepted-result candidate
+      - name: Print v0.1 holdout result
         run: |
           python - <<'PY'
           import json
@@ -65,11 +65,45 @@ jobs:
           assert r['qualification_policy']['selected_on_seasons'] == [2024]
           assert all('spread' not in c.lower() and 'market' not in c.lower() and 'odds' not in c.lower() for c in r['features'])
           PY
+      - name: Run multi-season walk-forward diagnostics
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from beard_model.diagnostics import walk_forward_diagnostics
+
+          frame = pd.read_parquet('artifacts/beard_matchups_2015_2025.parquet')
+          result = walk_forward_diagnostics(frame, test_seasons=range(2020, 2026))
+          with open('artifacts/walk_forward_diagnostics.json','w') as f:
+              json.dump(result, f, indent=2, sort_keys=True)
+              f.write('\n')
+          concise = {
+              'feature_health': result['feature_health'],
+              'margin_by_season': [
+                  {
+                      'season': fold['test_season'],
+                      **fold['margin_comparison'],
+                  }
+                  for fold in result['folds']
+              ],
+              'aggregate_fixed_thresholds': result['aggregate_fixed_thresholds'],
+              'threshold_3_by_season': [
+                  {
+                      'season': fold['test_season'],
+                      **next(x for x in fold['fixed_edge_thresholds'] if x['threshold'] == 3.0),
+                  }
+                  for fold in result['folds']
+              ],
+          }
+          print(json.dumps(concise, indent=2, sort_keys=True))
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: beard-full-backtest
           path: |
+            artifacts/beard_matchups_2015_2025.parquet
             artifacts/backtest.json
             artifacts/backtest_summary.json
             artifacts/backtest_stdout.txt
+            artifacts/walk_forward_diagnostics.json
           retention-days: 30
