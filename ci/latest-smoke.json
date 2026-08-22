@@ -1,0 +1,18 @@
+{
+  "checks": {
+    "completed_games_at_least_250": true,
+    "pregame_feature_columns_present": true,
+    "rows_at_least_250": true,
+    "spread_line_present_post_pipeline": true
+  },
+  "columns": 241,
+  "command": "python -m beard_model.pipeline --seasons 2025 --output artifacts/beard_2025.parquet",
+  "completed_games": 272,
+  "exit_code": 0,
+  "rows": 272,
+  "season": 2025,
+  "source": "nflverse real PBP + schedules",
+  "stderr_tail": "",
+  "stdout_tail": "Wrote 272 matchup rows to artifacts/beard_2025.parquet\nMarket integrity: nflverse spread_line was joined only after market-blind matchup features were built.\n",
+  "success": true
+}
