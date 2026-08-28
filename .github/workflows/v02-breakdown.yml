@@ -1,0 +1,95 @@
+name: BEARD v0.2 Breakdown
+
+on:
+  pull_request:
+
+jobs:
+  breakdown:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Context breakdown using fixed v0.2 model architecture
+        run: |
+          python - <<'PY'
+          import json
+          import numpy as np
+          import pandas as pd
+          from beard_model.v02 import add_v02_features, select_alpha_walk_forward, ridge_pipeline, V02_FEATURES, _ats_rows
+
+          frame=pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          x=add_v02_features(frame)
+          alpha=select_alpha_walk_forward(frame)['selected_alpha']
+
+          allrows=[]
+          for season in range(2020,2026):
+              train=x[(x.season<season)&x.home_margin.notna()].copy()
+              test=x[(x.season==season)&x.home_margin.notna()].copy()
+              m=ridge_pipeline(alpha).fit(train[list(V02_FEATURES)],train.home_margin)
+              pred=m.predict(test[list(V02_FEATURES)])
+              a=_ats_rows(test,pred)
+              for c in ['season','week','home_team','away_team','home_starter_change','away_starter_change','v02_min_games_played']:
+                  a[c]=test[c].to_numpy()
+              # nflverse positive means home favored; zero treated pick'em.
+              a['market_fair_margin']=test['spread_line'].to_numpy(float)
+              a['model_pick_is_home']=a['side'].eq('HOME')
+              a['model_pick_favorite']=np.where(
+                  a['side'].eq('HOME'), a['market_fair_margin']>0,
+                  np.where(a['side'].eq('AWAY'), a['market_fair_margin']<0, False)
+              )
+              a['recommended_starter_change']=np.where(a['side'].eq('HOME'),a['home_starter_change'],a['away_starter_change'])
+              allrows.append(a)
+          r=pd.concat(allrows,ignore_index=True)
+
+          def summary(df, threshold=4.0):
+              s=df[df.edge_abs>=threshold]
+              w=int((s.ats_result=='WIN').sum()); l=int((s.ats_result=='LOSS').sum()); p=int((s.ats_result=='PUSH').sum()); n=w+l
+              net=w*(100/110)-l
+              return {'bets':n,'wins':w,'losses':l,'pushes':p,'win_pct':None if not n else w/n,'roi':None if not n else net/n}
+
+          cuts={
+              'all': lambda d:d,
+              'weeks_1_4': lambda d:d[d.week<=4],
+              'weeks_5_plus': lambda d:d[d.week>=5],
+              'weeks_7_plus': lambda d:d[d.week>=7],
+              'pick_home': lambda d:d[d.model_pick_is_home],
+              'pick_away': lambda d:d[~d.model_pick_is_home],
+              'pick_favorite': lambda d:d[d.model_pick_favorite],
+              'pick_underdog': lambda d:d[~d.model_pick_favorite],
+              'recommended_qb_change': lambda d:d[d.recommended_starter_change>0],
+              'recommended_qb_stable': lambda d:d[d.recommended_starter_change<=0],
+              'market_close_game_abs3_or_less': lambda d:d[d.market_fair_margin.abs()<=3],
+              'market_spread_over3': lambda d:d[d.market_fair_margin.abs()>3],
+          }
+          report={'selected_alpha':alpha,'threshold':4.0,'by_season':{},'development_2020_2024':{},'audit_2025':{}}
+          for season in range(2020,2026):
+              d=r[r.season==season]
+              report['by_season'][str(season)]={k:summary(fn(d)) for k,fn in cuts.items()}
+          dev=r[r.season<=2024]
+          audit=r[r.season==2025]
+          report['development_2020_2024']={k:summary(fn(dev)) for k,fn in cuts.items()}
+          report['audit_2025']={k:summary(fn(audit)) for k,fn in cuts.items()}
+          open('v02_breakdown.json','w').write(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-v02-breakdown
+          path: v02_breakdown.json
+          retention-days: 30

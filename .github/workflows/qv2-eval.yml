@@ -1,0 +1,67 @@
+name: BEARD QV2 Evaluation
+
+on:
+  pull_request:
+
+jobs:
+  qv2-evaluation:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Run QV2 post-market qualification walk-forward evaluation
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from beard_model.qv2 import evaluate_qv2
+
+          frame = pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          result = evaluate_qv2(frame)
+          with open('qv2_result.json','w') as f:
+              json.dump(result, f, indent=2, sort_keys=True)
+              f.write('\n')
+          concise = {
+              'label': result['label'],
+              'fair_model': result['fair_model'],
+              'qualifier': result['qualifier'],
+              'aggregate_development_2020_2024': result['aggregate_development_2020_2024'],
+              'folds': [
+                  {
+                      'season': f['season'],
+                      'role': f['role'],
+                      'eligible_games': f['eligible_games'],
+                      'brier': f['brier'],
+                      'log_loss': f['log_loss'],
+                      'mean_predicted_probability': f['mean_predicted_probability'],
+                      'actual_win_rate': f['actual_win_rate'],
+                      'probability_gates': f['probability_gates'],
+                      'raw_edge_4_baseline': f['raw_edge_4_baseline'],
+                  }
+                  for f in result['folds']
+              ],
+              'scientific_status': result['scientific_status'],
+          }
+          print(json.dumps(concise, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-qv2-evaluation
+          path: qv2_result.json
+          retention-days: 30

@@ -1,0 +1,73 @@
+name: BEARD v0.3 Grading Evaluation
+
+on:
+  pull_request:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  v03-grading:
+    if: github.head_ref == 'ci/verify-beard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Run grading tests
+        run: pytest -q tests/test_grading_v03.py
+      - name: Download preserved 2015-2025 feature frame
+        uses: actions/download-artifact@v4
+        with:
+          name: beard-full-backtest
+          repository: Riggy16/sports-betting-backend
+          run-id: 32547928293
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/base
+      - name: Run Walters-style grading evaluation
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from beard_model.grading import grade_walk_forward
+
+          frame = pd.read_parquet('artifacts/base/beard_matchups_2015_2025.parquet')
+          result = grade_walk_forward(frame)
+          with open('v03_grading_result.json','w') as f:
+              json.dump(result, f, indent=2, sort_keys=True)
+              f.write('\n')
+          concise = {
+              'label': result['label'],
+              'selected_alpha': result['selected_alpha'],
+              'model_features': result['model_features'],
+              'scientific_status': result['scientific_status'],
+              'margin_by_season': [
+                  {
+                      'season': x['season'], 'role': x['role'],
+                      'beard_mae': x['beard_mae'], 'market_mae': x['market_mae'],
+                      'beard_minus_market': x['beard_mae'] - x['market_mae'],
+                  }
+                  for x in result['folds']
+              ],
+              'edge_3_by_season': [
+                  {'season': x['season'], 'role': x['role'], **next(a for a in x['ats'] if a['threshold'] == 3.0)}
+                  for x in result['folds']
+              ],
+              'edge_4_by_season': [
+                  {'season': x['season'], 'role': x['role'], **next(a for a in x['ats'] if a['threshold'] == 4.0)}
+                  for x in result['folds']
+              ],
+          }
+          print(json.dumps(concise, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beard-v03-grading-evaluation
+          path: v03_grading_result.json
+          retention-days: 30
